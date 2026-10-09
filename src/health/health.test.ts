@@ -34,4 +34,9 @@ describe("getHealth", () => {
     const h = await getHealth({ pingDb: null, version: "v" });
     expect(h).toEqual({ status: 200, body: { ok: true, db: null, version: "v" } });
   });
+
+  it("returns 503 when no database is configured but one is required", async () => {
+    const h = await getHealth({ pingDb: null, version: "v", requireDb: true });
+    expect(h).toEqual({ status: 503, body: { ok: false, db: null, version: "v" } });
+  });
 });

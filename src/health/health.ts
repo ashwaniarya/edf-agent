@@ -6,10 +6,16 @@ export type HealthDeps = {
   pingDb: (() => Promise<void>) | null;
   version: string;
   timeoutMs?: number;
+  /** When true, a missing database counts as unhealthy (deployed environments). */
+  requireDb?: boolean;
 };
 
-export async function getHealth({ pingDb, version, timeoutMs = 2000 }: HealthDeps): Promise<HealthResult> {
-  if (!pingDb) return { status: 200, body: { ok: true, db: null, version } };
+export async function getHealth({ pingDb, version, timeoutMs = 2000, requireDb = false }: HealthDeps): Promise<HealthResult> {
+  if (!pingDb) {
+    return requireDb
+      ? { status: 503, body: { ok: false, db: null, version } }
+      : { status: 200, body: { ok: true, db: null, version } };
+  }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
