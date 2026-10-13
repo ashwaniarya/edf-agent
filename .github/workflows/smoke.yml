@@ -1,0 +1,24 @@
+name: Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Railway environment to smoke
+        type: choice
+        options: [dev, production]
+        default: dev
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Smoke ${{ inputs.environment }}
+        run: npm run smoke -- "${{ inputs.environment == 'production' && 'https://web-production-89445.up.railway.app' || 'https://web-dev-80c3.up.railway.app' }}"
