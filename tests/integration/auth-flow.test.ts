@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { decodeJwt } from "jose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { authSmokeCheck } from "@/scripts/smoke-check";
 import { createDpopKey, type DpopKey } from "@/tests/support/dpop";
 import { legacyInitialize, legacyRequest, modernRequest, rpcMessage } from "@/tests/support/mcp-rpc";
 
@@ -274,6 +275,13 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     const preflight = await fetch(`${BASE}/.well-known/oauth-protected-resource/api/mcp`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-methods")).toContain("GET");
+  });
+
+  it("passes the post-deploy auth smoke check on BETTER_AUTH_URL's origin, and fails it on any other host for the same server", async () => {
+    expect(await authSmokeCheck(BASE)).toEqual({ pass: true, resource: MCP });
+    const other = await authSmokeCheck(INTERNAL); // same server, reached under a host users would not `claude mcp add`
+    expect(other.pass).toBe(false);
+    expect("reason" in other && other.reason).toContain("BETTER_AUTH_URL");
   });
 
   it("serves authorization-server metadata (path-inserted and root) with PKCE, DCR and CIMD, with CORS", async () => {
