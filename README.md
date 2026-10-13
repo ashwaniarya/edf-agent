@@ -40,7 +40,7 @@ Dev and production must differ in origin, secret and database; their tokens then
 | --- | --- |
 | `npm run dev` | Next dev server; no env needed. |
 | `npm run build` | Production build. |
-| `npm start` | Runs the idempotent migrations (`scripts/migrate.ts`, under an advisory lock), then `next start`. |
+| `npm start` | Runs the idempotent migrations (`scripts/migrate.ts`, under an advisory lock), then `next start`. Both read the same `.env*` files; exported variables win. |
 | `npm test` | Unit tests. The integration suite is skipped when `TEST_DATABASE_URL` is unset. |
 | `npm run test:integration` | The end-to-end OAuth suite. Requires `TEST_DATABASE_URL`, a Postgres role that may `CREATE DATABASE` (see the recipe at the top of `tests/integration/auth-flow.test.ts`), and fails when it is unset. |
 | `npm run smoke -- https://<env>` | Post-deploy check: health, protected-resource metadata and the anonymous 401 challenge. |

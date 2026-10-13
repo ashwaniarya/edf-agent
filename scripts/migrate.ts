@@ -1,5 +1,10 @@
+import nextEnv from "@next/env"; // CJS bundle: a named import fails at load time under "type": "module"
 import { Pool } from "pg";
 import { migrateAuthSchema } from "../src/auth/migrate";
+
+// Load the env files `next start` loads (.env.production.local, .env.local, .env.production, .env), so a local
+// `npm start` migrates the same database the app then serves. Variables already set (Railway's) take precedence.
+nextEnv.loadEnvConfig(process.cwd());
 
 const url = process.env.DATABASE_URL;
 if (!url) {
