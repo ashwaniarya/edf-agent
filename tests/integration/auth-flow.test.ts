@@ -24,19 +24,23 @@ if (!ADMIN_URL) {
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
-const claude = vi.hoisted(() => {
-  const id = "https://claude.ai/oauth/claude-code-client-metadata";
-  return {
+const { claude, evil } = vi.hoisted(() => {
+  const metadata = (id: string, name: string, redirect_uris: string[]) => ({
     id,
     document: {
       client_id: id,
-      client_name: "Claude Code",
-      client_uri: "https://claude.ai",
-      redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"],
+      client_name: name,
+      redirect_uris,
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
     },
+  });
+  const claude = metadata("https://claude.ai/oauth/claude-code-client-metadata", "Claude Code", ["http://localhost/callback", "http://127.0.0.1/callback"]);
+  return {
+    claude: { ...claude, document: { ...claude.document, client_uri: "https://claude.ai" } },
+    // Anyone can host a CIMD document; this one points its redirect at a host it controls.
+    evil: metadata("https://evil.example/c.json", "EDF Agent (totally)", ["https://evil.example/landing"]),
   };
 });
 
@@ -44,8 +48,9 @@ const claude = vi.hoisted(() => {
 vi.mock("@better-auth/cimd/node", () => ({
   fetchClientMetadataResource: async (input: RequestInfo | URL) => {
     const url = input instanceof Request ? input.url : String(input);
-    if (url !== claude.id) return new Response("not found", { status: 404 });
-    return new Response(JSON.stringify(claude.document), {
+    const client = [claude, evil].find((c) => c.id === url);
+    if (!client) return new Response("not found", { status: 404 });
+    return new Response(JSON.stringify(client.document), {
       status: 200,
       headers: { "content-type": "application/json", "cache-control": "max-age=300" },
     });
@@ -118,6 +123,8 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     for await (const c of req) chunks.push(c as Buffer);
     const headers = new Headers();
     for (const [k, v] of Object.entries(req.headers)) if (typeof v === "string") headers.set(k, v);
+    // Like `next start`: x-forwarded-for defaults to the socket address, so in-container fetches all share 127.0.0.1.
+    if (!headers.has("x-forwarded-for") && req.socket.remoteAddress) headers.set("x-forwarded-for", req.socket.remoteAddress);
     const request = new Request(new URL(req.url!, BASE), {
       method: req.method,
       headers,
@@ -366,5 +373,64 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
       headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.78" },
       body: JSON.stringify({ redirect_uris: ["http://localhost:1/callback"], token_endpoint_auth_method: "none" }),
     })).status).toBe(201);
+  });
+
+  async function authorizeLocation(query: Record<string, string>, ip: string) {
+    const res = await fetch(`${BASE}/api/auth/oauth2/authorize?${new URLSearchParams(query)}`, {
+      redirect: "manual",
+      headers: { "sec-fetch-mode": "navigate", "x-forwarded-for": ip },
+    });
+    const location = res.status === 302 ? res.headers.get("location") : (await res.json()).url;
+    return new URL(location, BASE);
+  }
+
+  it("refuses DCR of a client whose redirect is an arbitrary https host", async () => {
+    const res = await fetch(`${BASE}/api/auth/oauth2/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.2" },
+      body: JSON.stringify({ redirect_uris: ["https://evil.example/landing"], token_endpoint_auth_method: "none" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("invalid_redirect_uri");
+  });
+
+  it("never auto-redirects an anonymous authorize request to an untrusted CIMD redirect, even for early errors", async () => {
+    const { challenge } = pkce();
+    const cases: Record<string, string>[] = [{ scope: "bogus" }, { prompt: "none" }, { code_challenge: challenge, code_challenge_method: "S256", resource: MCP }];
+    for (const extra of cases) {
+      const location = await authorizeLocation(
+        { response_type: "code", client_id: evil.id, redirect_uri: "https://evil.example/landing", state: "x", ...extra },
+        "198.51.100.3",
+      );
+      expect(location.host).not.toBe("evil.example");
+      expect(`${location.origin}${location.pathname}`).toBe(`${ISSUER}/error`);
+      expect(location.searchParams.get("error")).toBe("invalid_redirect");
+    }
+  });
+
+  it("still returns early authorize errors to a trusted loopback callback (any port)", async () => {
+    const location = await authorizeLocation(
+      { response_type: "code", client_id: dcrClientId, redirect_uri: "http://localhost:40000/callback", state: "s1", scope: "bogus" },
+      "198.51.100.4",
+    );
+    expect(`${location.origin}${location.pathname}`).toBe("http://localhost:40000/callback");
+    expect(location.searchParams.get("error")).toBe("invalid_scope");
+    expect(location.searchParams.get("state")).toBe("s1");
+  });
+
+  it("does not mount the managed-client endpoints (no client minting outside the /oauth2/register limit)", async () => {
+    expect(users.A.cookie).toBeTruthy();
+    const body = { redirect_uris: ["http://localhost:2/callback"], application_type: "native", client_name: "minted", token_endpoint_auth_method: "none" };
+    expect((await browserPost("/api/auth/oauth2/create-client", body, users.A)).status).toBe(404);
+    expect((await browserPost("/api/auth/oauth2/update-client", { client_id: dcrClientId, update: { client_name: "x" } }, users.A)).status).toBe(404);
+    expect((await browserPost("/api/auth/oauth2/client/rotate-secret", { client_id: dcrClientId }, users.A)).status).toBe(404);
+    expect((await browserPost("/api/auth/oauth2/delete-client", { client_id: dcrClientId }, users.A)).status).toBe(404);
+  });
+
+  it("serves the public JWKS outside the shared limiter: in-container verifier fetches all come from 127.0.0.1", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const statuses = new Set<number>();
+    for (let i = 0; i < 110; i++) statuses.add((await fetch(`http://127.0.0.1:${port}/api/auth/jwks`)).status);
+    expect([...statuses]).toEqual([200]);
   });
 });

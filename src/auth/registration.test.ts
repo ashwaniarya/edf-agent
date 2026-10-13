@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { withNativeApplicationTypeDefault } from "./registration";
+import { findUntrustedWebRedirect, isTrustedRedirect, validateMcpRedirectUri, withNativeApplicationTypeDefault } from "./registration";
 
 const claudeCodeV1 = {
   client_name: "Claude Code (edf)",
@@ -38,5 +38,63 @@ describe("withNativeApplicationTypeDefault", () => {
   it("ignores non-object bodies", () => {
     expect(withNativeApplicationTypeDefault(undefined)).toBeNull();
     expect(withNativeApplicationTypeDefault("x")).toBeNull();
+  });
+});
+
+describe("isTrustedRedirect (authorize-time trust: no auto-redirects to hosts anyone could register)", () => {
+  it("trusts loopback http callbacks on any port (Claude Code, other native CLIs)", () => {
+    for (const uri of ["http://localhost:53682/callback", "http://127.0.0.1:1/cb", "http://[::1]:5000/cb", "http://localhost/callback"]) {
+      expect(isTrustedRedirect(uri)).toBe(true);
+    }
+  });
+
+  it("trusts https callbacks only on allow-listed hosts (claude.ai web connectors)", () => {
+    expect(isTrustedRedirect("https://claude.ai/api/mcp/auth_callback")).toBe(true);
+    expect(isTrustedRedirect("https://claude.com/api/mcp/auth_callback")).toBe(true);
+    for (const uri of [
+      "https://evil.example/landing",
+      "https://claude.ai.evil.example/cb",
+      "https://evilclaude.ai/cb",
+      "https://localhost/cb",
+      "https://user:pass@claude.ai/cb",
+    ]) {
+      expect(isTrustedRedirect(uri)).toBe(false);
+    }
+  });
+
+  it("rejects non-loopback http, unparsable and script-capable URIs", () => {
+    for (const uri of ["http://evil.example/cb", "http://localhost.evil.example/cb", "not a url", "", "javascript:alert(1)", "data:text/html,x", "file:///etc/passwd"]) {
+      expect(isTrustedRedirect(uri)).toBe(false);
+    }
+  });
+
+  it("trusts reverse-domain private-use schemes (validated by Better Auth at registration)", () => {
+    expect(isTrustedRedirect("com.example.edf:/oauth")).toBe(true);
+  });
+});
+
+describe("validateMcpRedirectUri (mcp({ validateRedirectUri }))", () => {
+  it("requires both the registered-URI match and a trusted target", () => {
+    expect(validateMcpRedirectUri("https://evil.example/landing", ["https://evil.example/landing"], true)).toBe(false);
+    expect(validateMcpRedirectUri("http://localhost:40000/callback", ["http://localhost:53682/callback"], true)).toBe(true);
+    expect(validateMcpRedirectUri("http://localhost:40000/callback", ["http://localhost:53682/other"], false)).toBe(false);
+  });
+});
+
+describe("findUntrustedWebRedirect (registration-time check)", () => {
+  it("names the first http(s) redirect that is not trusted", () => {
+    expect(findUntrustedWebRedirect({ redirect_uris: ["http://localhost:1/cb", "https://evil.example/landing"] })).toBe("https://evil.example/landing");
+    expect(findUntrustedWebRedirect({ redirect_uris: ["http://evil.example/cb"] })).toBe("http://evil.example/cb");
+  });
+
+  it("accepts Claude Code and claude.ai registrations", () => {
+    expect(findUntrustedWebRedirect(claudeCodeV1)).toBeNull();
+    expect(findUntrustedWebRedirect({ redirect_uris: ["https://claude.ai/api/mcp/auth_callback"] })).toBeNull();
+  });
+
+  it("leaves private-use schemes and malformed bodies to Better Auth's own validation", () => {
+    expect(findUntrustedWebRedirect({ redirect_uris: ["cursor://anysphere.cursor-mcp/oauth/callback"] })).toBeNull();
+    expect(findUntrustedWebRedirect({ redirect_uris: "https://evil.example/x" })).toBeNull();
+    expect(findUntrustedWebRedirect(undefined)).toBeNull();
   });
 });
