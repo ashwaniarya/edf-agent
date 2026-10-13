@@ -6,6 +6,7 @@ import { mcp } from "@better-auth/mcp";
 import { cimd } from "@better-auth/cimd";
 import { fetchClientMetadataResource } from "@better-auth/cimd/node";
 import { findUntrustedWebRedirect, validateMcpRedirectUri, withNativeApplicationTypeDefault } from "./registration";
+import { withMcpResource } from "./resource";
 
 export type AuthOptionsInput = {
   pool: Pool;
@@ -48,6 +49,14 @@ export function buildAuthOptions({ pool, baseURL, mcpResource, secret }: AuthOpt
     advanced: { ipAddress: { ipAddressHeaders: ["x-forwarded-for", "x-real-ip"] } },
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === "/oauth2/authorize" || ctx.path === "/oauth2/token") {
+          // Authorize reads the query (GET) or the form body (POST); the token endpoint reads the body. A missing
+          // resource is filled only at authorize: the token endpoint falls back to the grant's stored resource.
+          const key = ctx.path === "/oauth2/authorize" && ctx.method === "GET" ? "query" : "body";
+          const params = withMcpResource(ctx[key], mcpResource, { fill: ctx.path === "/oauth2/authorize" });
+          if (params) return { context: { [key]: params } };
+          return;
+        }
         if (ctx.path !== "/oauth2/register") return;
         const untrusted = findUntrustedWebRedirect(ctx.body);
         if (untrusted) {

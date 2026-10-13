@@ -70,9 +70,10 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
   let INTERNAL = "";
   let MCP = "";
   let ISSUER = "";
-  const users: Record<"A" | "B", { id: string; email: string; ip: string; cookie: string; access: string; refresh: string }> = {
+  const users: Record<"A" | "B" | "C", { id: string; email: string; ip: string; cookie: string; access: string; refresh: string }> = {
     A: { id: "", email: "asha@example.com", ip: "203.0.113.10", cookie: "", access: "", refresh: "" },
     B: { id: "", email: "bala@example.com", ip: "203.0.113.11", cookie: "", access: "", refresh: "" },
+    C: { id: "", email: "chitra@example.com", ip: "203.0.113.12", cookie: "", access: "", refresh: "" },
   };
   let dcrClientId = "";
 
@@ -161,7 +162,14 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
   }
 
   /** Browser leg: authorize -> sign-in (resumes the signed request) -> consent -> callback with code. */
-  async function authorize(who: (typeof users)["A"], clientId: string, redirectUri: string, scope: string | null, dpop?: DpopKey) {
+  /** `resource` defaults to MCP on both legs; null omits it (pre-RFC 8707 clients). */
+  async function authorize(
+    who: (typeof users)["A"],
+    clientId: string,
+    redirectUri: string,
+    scope: string | null,
+    { dpop, resource = MCP }: { dpop?: DpopKey; resource?: string | null } = {},
+  ) {
     const { verifier, challenge } = pkce();
     const state = randomBytes(8).toString("hex");
     const q = new URLSearchParams({
@@ -171,10 +179,10 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
       state,
       code_challenge: challenge,
       code_challenge_method: "S256",
-      resource: MCP,
       prompt: "consent",
     });
     if (scope) q.set("scope", scope);
+    if (resource) q.set("resource", resource);
 
     const start = await fetch(`${BASE}/api/auth/oauth2/authorize?${q}`, { redirect: "manual", headers: { "x-forwarded-for": who.ip } });
     const loginUrl = new URL(start.status === 302 ? start.headers.get("location")! : (await start.json()).url, BASE);
@@ -208,7 +216,7 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
         code_verifier: verifier,
         redirect_uri: redirectUri,
         client_id: clientId,
-        resource: MCP,
+        ...(resource ? { resource } : {}),
       }),
     });
     expect(token.status).toBe(200);
@@ -287,8 +295,8 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     expect((await oidc.json()).issuer).toBe(ISSUER);
   });
 
-  it("signs up users A and B", async () => {
-    for (const key of ["A", "B"] as const) {
+  it("signs up users A, B and C", async () => {
+    for (const key of ["A", "B", "C"] as const) {
       const who = users[key];
       const res = await browserPost("/api/auth/sign-up/email", { email: who.email, password: "correct horse battery", name: `User ${key}` }, who);
       expect(res.status).toBe(200);
@@ -349,7 +357,7 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
 
   it("a DPoP client gets a sender-constrained token and calls whoami, with proofs for the advertised public URLs", async () => {
     const key = await createDpopKey();
-    const tokens = await authorize(users.B, claude.id, "http://localhost:61235/callback", null, key);
+    const tokens = await authorize(users.B, claude.id, "http://localhost:61235/callback", null, { dpop: key });
     expect(tokens.token_type).toBe("DPoP");
     expect(decodeJwt(tokens.access_token).cnf).toEqual({ jkt: key.jkt });
     const { status, msg } = await whoami(tokens.access_token, "modern", key);
@@ -367,6 +375,53 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     const { access_token } = await res.json();
     const { msg } = await whoami(access_token);
     expect(msg.result.structuredContent.userId).toBe(users.A.id);
+  });
+
+  it("a client that never sends RFC 8707 resource still gets a JWT for /api/mcp, and so does its refresh", async () => {
+    const tokens = await authorize(users.C, dcrClientId, "http://localhost:53682/callback", null, { resource: null });
+    const claims = decodeJwt(tokens.access_token);
+    expect([claims.aud].flat()).toContain(MCP);
+    expect((await whoami(tokens.access_token)).msg.result.structuredContent.userId).toBe(users.C.id);
+
+    const res = await fetch(`${BASE}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokens.refresh_token!, client_id: dcrClientId }),
+    });
+    expect(res.status).toBe(200);
+    const refreshed = (await res.json()).access_token;
+    expect([decodeJwt(refreshed).aud].flat()).toContain(MCP);
+    expect((await whoami(refreshed)).msg.result.structuredContent.userId).toBe(users.C.id);
+  });
+
+  it("defaults resource for both GET and form-POST authorization requests (the signed sign-in hand-off carries it)", async () => {
+    const { challenge } = pkce();
+    const params = new URLSearchParams({
+      response_type: "code",
+      client_id: dcrClientId,
+      redirect_uri: "http://localhost:53682/callback",
+      state: "st",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    });
+    const get = await fetch(`${BASE}/api/auth/oauth2/authorize?${params}`, { redirect: "manual", headers: { "x-forwarded-for": "198.51.100.5" } });
+    const post = await fetch(`${BASE}/api/auth/oauth2/authorize`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: BASE, "x-forwarded-for": "198.51.100.5" },
+      body: params,
+    });
+    for (const res of [get, post]) {
+      const login = new URL(res.status === 302 ? res.headers.get("location")! : (await res.json()).url, BASE);
+      expect(login.pathname).toBe("/sign-in");
+      expect(login.searchParams.get("resource")).toBe(MCP);
+    }
+  });
+
+  it("accepts the MCP URL with a trailing slash as the resource and binds the token to the canonical URL", async () => {
+    const tokens = await authorize(users.C, dcrClientId, "http://localhost:53682/callback", null, { resource: `${MCP}/` });
+    expect([decodeJwt(tokens.access_token).aud].flat()).toContain(MCP);
+    expect((await whoami(tokens.access_token)).status).toBe(200);
   });
 
   it("rejects A's token with a tampered signature (401, never 500)", async () => {
