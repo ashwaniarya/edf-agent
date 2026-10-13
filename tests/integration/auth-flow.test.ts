@@ -1,3 +1,11 @@
+/*
+ * Runs only when TEST_DATABASE_URL points at a Postgres role that may CREATE DATABASE; the suite creates
+ * and drops its own database. A throwaway cluster (postgres refuses to run as root):
+ *   D=$(mktemp -d /tmp/edfpg-XXXX); chown postgres $D
+ *   su postgres -s /bin/sh -c "/usr/lib/postgresql/16/bin/initdb -D $D/data -U postgres --auth=trust &&
+ *     /usr/lib/postgresql/16/bin/pg_ctl -D $D/data -l $D/log -o '-p 54329 -k $D -c listen_addresses=127.0.0.1' -w start"
+ *   TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:54329/postgres npm run test:integration
+ */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { execFile } from "node:child_process";
@@ -10,7 +18,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { legacyInitialize, legacyRequest, modernRequest, rpcMessage } from "@/tests/support/mcp-rpc";
 
 const ADMIN_URL = process.env.TEST_DATABASE_URL;
-if (!ADMIN_URL) console.warn("[integration] TEST_DATABASE_URL is not set; skipping the S1 auth-flow suite.");
+if (!ADMIN_URL) {
+  process.stderr.write("[integration] TEST_DATABASE_URL is not set; skipping the S1 auth-flow suite. Set it to a Postgres 16 URL with CREATEDB.\n");
+}
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
