@@ -3,6 +3,9 @@ export default function Home() {
     <main style={{ fontFamily: "system-ui", padding: 24 }}>
       <h1>EDF Agent</h1>
       <p>Prepares RBI Export Declaration Form filings for service exporters (FEMA 23(R)/2026, effective 1 Oct 2026).</p>
+      <p>
+        <a href="/sign-in">Sign in</a> · <a href="/sign-up">Create an account</a> · <a href="/dashboard">Dashboard</a>
+      </p>
     </main>
   );
 }
