@@ -461,6 +461,20 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     return new URL(location, BASE);
   }
 
+  it("records a known gap: Cursor's authority-bearing cursor:// redirect fails Better Auth's RFC 8252 private-use check", async () => {
+    for (const uri of ["cursor://anysphere.cursor-mcp/oauth/callback", "cursor://anysphere.cursor-retrieval/oauth/user-edf/callback"]) {
+      const res = await fetch(`${BASE}/api/auth/oauth2/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.6" },
+        body: JSON.stringify({ client_name: "Cursor", redirect_uris: [uri], token_endpoint_auth_method: "none" }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe("invalid_redirect_uri");
+      expect(body.error_description).toMatch(/reverse-domain/); // Better Auth's own rule, not our allow-list
+    }
+  });
+
   it("refuses DCR of a client whose redirect is an arbitrary https host", async () => {
     const res = await fetch(`${BASE}/api/auth/oauth2/register`, {
       method: "POST",
