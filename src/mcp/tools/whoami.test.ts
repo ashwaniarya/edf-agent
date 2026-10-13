@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { UserDirectory, UserRecord } from "@/src/auth/users";
+import { LEAK, logged } from "@/tests/support/logs";
 import { whoami, whoamiTool } from "./whoami";
 
 const A: UserRecord = { id: "user_A", email: "a@example.com", name: "Asha" };
@@ -11,6 +12,8 @@ const users = (...records: UserRecord[]): UserDirectory => ({
 const ALL_SCOPES = ["openid", "profile", "email", "offline_access"];
 const identity = (userId: string, scopes: string[] = ALL_SCOPES) => ({ userId, clientId: "client_1", scopes });
 const text = (r: { content: unknown[] }) => (r.content[0] as { text: string }).text;
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("whoami", () => {
   it("returns the caller's own userId, email and name, looked up by the verified userId", async () => {
@@ -55,10 +58,13 @@ describe("whoami", () => {
   });
 
   it("returns a generic tool error when the lookup fails, without leaking the cause", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const failing: UserDirectory = { findById: async () => { throw new Error("connect ECONNREFUSED 10.0.0.5 password=hunter2"); } };
     const r = await whoami({ users: failing }, identity("user_A"));
     expect(r.isError).toBe(true);
     expect(text(r)).not.toMatch(/ECONNREFUSED|hunter2|10\.0\.0\.5/);
+    // Logs carry the error class only: no cause, no stack, no user id.
+    expect(error).toHaveBeenCalled();
+    expect(logged(error)).not.toMatch(LEAK);
   });
 });

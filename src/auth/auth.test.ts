@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logged as format } from "@/tests/support/logs";
 import { withAuth } from "./auth";
 
 const SECRET = "x-secret-value-that-must-not-appear-anywhere";
@@ -23,8 +24,9 @@ describe("withAuth when deployed without a valid auth config", () => {
     expect(res.status).toBe(503);
     expect(handler).not.toHaveBeenCalled();
     expect(await res.json()).toEqual({ error: "auth_unavailable" });
-    expect(JSON.stringify(logged.mock.calls)).toContain("BETTER_AUTH_URL_MISSING");
-    expect(JSON.stringify(logged.mock.calls)).not.toContain(SECRET);
+    expect(format(logged)).toContain("BETTER_AUTH_URL_MISSING");
+    expect(format(logged)).not.toContain(SECRET);
+    expect(format(logged)).not.toMatch(/\n\s+at /);
   });
 
   it("keeps discovery routes at 503 with CORS rather than a 500", async () => {

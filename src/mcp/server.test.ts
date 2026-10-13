@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { UserDirectory } from "@/src/auth/users";
 import { startLocalJwks, type LocalJwks } from "@/tests/support/local-jwks";
+import { LEAK, logged } from "@/tests/support/logs";
 import { LEGACY_VERSION, MODERN_VERSION, legacyInitialize, legacyRequest, modernRequest, rpcMessage } from "@/tests/support/mcp-rpc";
 import { createMcpRoute } from "./route";
 
@@ -28,6 +29,7 @@ beforeAll(async () => {
   });
 });
 afterAll(() => jwks.close());
+afterEach(() => vi.restoreAllMocks());
 
 async function send({ id, request }: { id: number; request: Request }) {
   const res = await route.POST(request);
@@ -89,6 +91,13 @@ describe("POST /api/mcp — 2026-07-28 (Claude Code's default negotiation)", () 
 });
 
 describe("/api/mcp route edges", () => {
+  it("rejects a token from the right key and audience but another issuer (route-level issuer wiring)", async () => {
+    const token = await jwks.sign({ iss: "https://dev.edf.test/api/auth", aud: RESOURCE, sub: "user_A", azp: "client_1" });
+    const res = await route.POST(legacyInitialize(RESOURCE, { authorization: `Bearer ${token}` }).request);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toContain('error="invalid_token"');
+  });
+
   it("challenges unauthenticated initialize and server/discover probes with 401", async () => {
     for (const { request } of [legacyInitialize(RESOURCE), modernRequest(RESOURCE, "server/discover")]) {
       const res = await route.POST(request);
@@ -106,7 +115,7 @@ describe("/api/mcp route edges", () => {
   });
 
   it("answers 503 without details when dependencies cannot be loaded, and retries on the next request", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     let attempts = 0;
     const flaky = createMcpRoute(() => {
       attempts++;
@@ -117,5 +126,7 @@ describe("/api/mcp route edges", () => {
     expect(await res.text()).not.toContain("hunter2");
     await flaky.POST(legacyInitialize(RESOURCE).request);
     expect(attempts).toBe(2);
+    expect(error).toHaveBeenCalled();
+    expect(logged(error)).not.toMatch(LEAK);
   });
 });

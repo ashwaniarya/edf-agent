@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { JWTPayload } from "jose";
 import { createDpopKey } from "@/tests/support/dpop";
 import { startLocalJwks, type LocalJwks } from "@/tests/support/local-jwks";
+import { LEAK, logged } from "@/tests/support/logs";
 import { createMcpGuard, type McpIdentity } from "./mcp-guard";
 
 const ISSUER = "https://edf.test/api/auth";
@@ -77,8 +78,11 @@ describe("createMcpGuard", () => {
     expect(seen).toEqual([]);
   });
 
-  it("rejects a token minted for another environment (issuer/audience mismatch) and an id_token", async () => {
+  it("rejects issuer-only, audience-only and cross-environment mismatches", async () => {
     const { call, seen } = setup();
+    // Same key, subject and audience; only the issuer differs, so only the issuer check can reject it.
+    const wrongIssuer = await accessToken({ iss: "https://dev.edf.test/api/auth" });
+    await expectUnauthorized(await call(`Bearer ${wrongIssuer}`), { invalidToken: true });
     const otherEnv = await jwks.sign({ iss: "https://dev.edf.test/api/auth", aud: "https://dev.edf.test/api/mcp", sub: "user_A" });
     await expectUnauthorized(await call(`Bearer ${otherEnv}`), { invalidToken: true });
     const idToken = await jwks.sign({ iss: ISSUER, aud: "client_1", sub: "user_A" });
@@ -87,8 +91,8 @@ describe("createMcpGuard", () => {
   });
 
   it("answers 401 (never 500) without leaking internals when the verifier throws on a failing JWKS endpoint", async () => {
-    const logged = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     for (const path of ["/jwks-500", "/jwks-malformed"]) {
       const { call, seen } = setup(path);
       const token = await accessToken();
@@ -97,8 +101,9 @@ describe("createMcpGuard", () => {
       await expectUnauthorized(res, { invalidToken: true });
       expect(text).not.toMatch(/jwks|hunter2|failed|nope/i);
       expect(seen).toEqual([]);
-      expect(logged).toHaveBeenCalled();
-      expect(JSON.stringify(logged.mock.calls)).not.toContain(token);
+      expect(warn).toHaveBeenCalled();
+      expect(logged(warn, error)).not.toContain(token);
+      expect(logged(warn, error)).not.toMatch(LEAK);
     }
   });
 
@@ -140,12 +145,14 @@ describe("createMcpGuard", () => {
   });
 
   it("turns a handler crash into a generic 500, not a 401 that would trigger re-authentication", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const { call } = setup("/jwks", async () => {
       throw new Error("db password=hunter2");
     });
     const res = await call(`Bearer ${await accessToken()}`);
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain("hunter2");
+    expect(error).toHaveBeenCalled();
+    expect(logged(error)).not.toMatch(LEAK);
   });
 });
