@@ -1,6 +1,7 @@
 import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import type { DpopReplayStore } from "better-auth/oauth2";
 import type { JWTPayload } from "jose";
+import { errorName, jsonRpcError } from "@/src/http/jsonrpc";
 
 /** Caller identity derived only from a verified access token. */
 export type McpIdentity = { userId: string; clientId: string; scopes: string[] };
@@ -27,15 +28,6 @@ export function identityFromClaims(claims: JWTPayload): McpIdentity | null {
   return { userId: claims.sub, clientId, scopes };
 }
 
-function rpcError(status: number, code: number, message: string, headers: Record<string, string> = {}) {
-  return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }), {
-    status,
-    headers: { "content-type": "application/json", ...headers },
-  });
-}
-
-const errorName = (e: unknown) => (e instanceof Error ? e.name : "unknown");
-
 /**
  * Verifies the bearer token (signature, issuer, audience, expiry) and hands the
  * handler an identity taken from the token alone. Every auth failure, including
@@ -44,7 +36,7 @@ const errorName = (e: unknown) => (e instanceof Error ? e.name : "unknown");
 export function createMcpGuard(options: McpGuardOptions, handler: McpGuardedHandler): (request: Request) => Promise<Response> {
   const metadataUrl = protectedResourceMetadataUrl(options.resource);
   const unauthorized = (invalidToken: boolean) =>
-    rpcError(401, -32000, "Unauthorized", {
+    jsonRpcError(401, -32000, "Unauthorized", {
       "www-authenticate": `Bearer ${invalidToken ? 'error="invalid_token", ' : ""}resource_metadata="${metadataUrl}"`,
     });
 
@@ -64,7 +56,7 @@ export function createMcpGuard(options: McpGuardOptions, handler: McpGuardedHand
         return await handler(request, identity);
       } catch (e) {
         console.error("[mcp] handler failed:", errorName(e));
-        return rpcError(500, -32603, "Internal error");
+        return jsonRpcError(500, -32603, "Internal error");
       }
     },
   );
