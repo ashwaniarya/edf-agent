@@ -1,4 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { JWTPayload } from "jose";
 import { createDpopKey } from "@/tests/support/dpop";
 import { startLocalJwks, type LocalJwks } from "@/tests/support/local-jwks";
@@ -105,6 +107,28 @@ describe("createMcpGuard", () => {
       expect(logged(warn, error)).not.toContain(token);
       expect(logged(warn, error)).not.toMatch(LEAK);
     }
+  });
+
+  it("answers 401 invalid_token, without calling the handler or leaking anything, when the JWKS host refuses connections", async () => {
+    // Better Auth swallows the fetch TypeError here, so nothing is logged either: the only symptom is the 401.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const closed = await new Promise<number>((resolve) => {
+      const probe = createServer();
+      probe.listen(0, "127.0.0.1", () => {
+        const { port } = probe.address() as AddressInfo;
+        probe.close(() => resolve(port));
+      });
+    });
+    const handler = vi.fn(async () => Response.json({ ok: true }));
+    const guard = createMcpGuard({ issuer: ISSUER, resource: RESOURCE, jwksUrl: `http://127.0.0.1:${closed}/api/auth/jwks` }, handler);
+    const token = await accessToken({}, {});
+    const res = await guard(new Request(RESOURCE, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" }));
+    const text = await res.clone().text();
+    await expectUnauthorized(res, { invalidToken: true });
+    expect(text).not.toMatch(/127\.0\.0\.1|ECONNREFUSED|fetch failed/);
+    expect(handler).not.toHaveBeenCalled();
+    expect(logged(warn, error)).not.toMatch(LEAK);
   });
 
   it("rejects a verified token that has no subject", async () => {

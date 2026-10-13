@@ -101,7 +101,8 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     vi.stubEnv("BETTER_AUTH_URL", BASE);
     vi.stubEnv("BETTER_AUTH_SECRET", randomBytes(32).toString("base64"));
     vi.stubEnv("REQUIRE_DB", "");
-    vi.stubEnv("PORT", "");
+    // As on Railway: PORT is set, so the verifier fetches http://127.0.0.1:$PORT/api/auth/jwks (Host differs from BETTER_AUTH_URL).
+    vi.stubEnv("PORT", String((server.address() as AddressInfo).port));
   });
 
   afterAll(async () => {
