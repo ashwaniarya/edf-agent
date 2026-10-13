@@ -26,7 +26,7 @@ Clients that do not send the RFC 8707 `resource` parameter get it defaulted to `
 
 | Variable | Notes |
 | --- | --- |
-| `BETTER_AUTH_URL` | The environment's public https origin: no path, no trailing slash. It must be the exact host users pass to `claude mcp add`. The issuer is `<origin>/api/auth` and the MCP resource is `<origin>/api/mcp`. Optional for `next dev` (defaults to `http://localhost:3000`). |
+| `BETTER_AUTH_URL` | The environment's public https origin: no path, no trailing slash. It must be the exact host users pass to `claude mcp add`. The issuer is `<origin>/api/auth` and the MCP resource is `<origin>/api/mcp`. Optional for `next dev` (defaults to `http://localhost:3000`). On Railway with `REQUIRE_DB=true`, a loopback origin is rejected (`BETTER_AUTH_URL_LOOPBACK`). |
 | `BETTER_AUTH_SECRET` | 32+ random characters (`openssl rand -base64 32`), different in every environment. Keep it stable: it encrypts the token-signing keys stored in the database. |
 | `REQUIRE_DB` | `true` in deployed environments. It requires `DATABASE_URL`, an https `BETTER_AUTH_URL` and a 32+ character secret. Misconfiguration makes `/api/health` return 503 with reason codes. |
 | `DATABASE_URL` | Postgres 16, a separate database per environment. |

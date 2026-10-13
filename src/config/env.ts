@@ -13,6 +13,7 @@ export type EnvProblem =
   | "BETTER_AUTH_URL_MISSING"
   | "BETTER_AUTH_URL_INVALID"
   | "BETTER_AUTH_URL_INSECURE"
+  | "BETTER_AUTH_URL_LOOPBACK"
   | "BETTER_AUTH_SECRET_MISSING"
   | "BETTER_AUTH_SECRET_TOO_SHORT";
 
@@ -24,6 +25,12 @@ const DEV_URL = "http://localhost:3000";
 const DEV_SECRET = "edf-agent-local-development-only-secret-not-for-deploys";
 const MIN_SECRET_LENGTH = 32;
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const PLATFORM_MARKERS = ["RAILWAY_ENVIRONMENT_ID", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_PUBLIC_DOMAIN"];
+
+/** Any host that only ever means "this machine": never a public origin. */
+function isLoopbackHost(hostname: string): boolean {
+  return LOOPBACK.has(hostname) || hostname.endsWith(".localhost") || /^127\.\d+\.\d+\.\d+$/.test(hostname) || hostname === "0.0.0.0";
+}
 
 export class AuthConfigError extends Error {
   constructor(readonly problems: EnvProblem[]) {
@@ -32,7 +39,8 @@ export class AuthConfigError extends Error {
   }
 }
 
-function parseOrigin(raw: string): { origin: string } | { problem: EnvProblem } {
+/** `publicOnly`: running deployed on the platform, where an origin must be reachable by users' browsers. */
+function parseOrigin(raw: string, publicOnly: boolean): { origin: string } | { problem: EnvProblem } {
   let url: URL;
   try {
     url = new URL(raw);
@@ -42,6 +50,7 @@ function parseOrigin(raw: string): { origin: string } | { problem: EnvProblem } 
   if (url.username || url.password || url.search || url.hash || raw.includes("?") || url.pathname !== "/") {
     return { problem: "BETTER_AUTH_URL_INVALID" };
   }
+  if (publicOnly && isLoopbackHost(url.hostname)) return { problem: "BETTER_AUTH_URL_LOOPBACK" };
   if (url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname))) return { origin: url.origin };
   return { problem: url.protocol === "http:" ? "BETTER_AUTH_URL_INSECURE" : "BETTER_AUTH_URL_INVALID" };
 }
@@ -49,11 +58,13 @@ function parseOrigin(raw: string): { origin: string } | { problem: EnvProblem } 
 /** Validates auth env. Problems are reason codes only; values are never echoed. */
 export function readAuthEnv(env: Env = process.env): AuthEnvResult {
   const deployed = env.REQUIRE_DB === "true";
+  // A local `npm start` with REQUIRE_DB=true may use a loopback origin; a Railway deployment may not.
+  const onPlatform = PLATFORM_MARKERS.some((name) => Boolean(env[name]));
   const problems: EnvProblem[] = [];
 
   let baseURL = DEV_URL;
   if (env.BETTER_AUTH_URL) {
-    const parsed = parseOrigin(env.BETTER_AUTH_URL);
+    const parsed = parseOrigin(env.BETTER_AUTH_URL, deployed && onPlatform);
     if ("problem" in parsed) problems.push(parsed.problem);
     else baseURL = parsed.origin;
   } else if (deployed) {

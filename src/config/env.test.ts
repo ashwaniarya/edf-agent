@@ -39,10 +39,22 @@ describe("readAuthEnv (deployed: REQUIRE_DB=true)", () => {
     expect(r).toEqual({ ok: false, problems: ["BETTER_AUTH_URL_INSECURE"] });
   });
 
-  it("allows http only for loopback hosts", () => {
+  it("allows http only for loopback hosts off-platform (a local `npm start` with REQUIRE_DB=true)", () => {
     for (const url of ["http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"]) {
       expect(readAuthEnv({ ...deployed, BETTER_AUTH_URL: url, BETTER_AUTH_SECRET: SECRET }).ok).toBe(true);
     }
+  });
+
+  it("rejects a loopback BETTER_AUTH_URL, http or https, when running on Railway (e.g. .env.example's value pasted in)", () => {
+    for (const platform of [{ RAILWAY_PROJECT_ID: "p" }, { RAILWAY_ENVIRONMENT_ID: "e" }, { RAILWAY_SERVICE_ID: "s" }, { RAILWAY_PUBLIC_DOMAIN: "edf-dev.up.railway.app" }]) {
+      for (const url of ["http://localhost:3000", "https://localhost", "http://127.0.0.1:3000", "http://127.1.2.3", "http://[::1]:3000", "https://app.localhost", "http://0.0.0.0:3000"]) {
+        expect(readAuthEnv({ ...deployed, ...platform, BETTER_AUTH_URL: url, BETTER_AUTH_SECRET: SECRET })).toEqual({
+          ok: false,
+          problems: ["BETTER_AUTH_URL_LOOPBACK"],
+        });
+      }
+    }
+    expect(readAuthEnv({ ...deployed, RAILWAY_PROJECT_ID: "p", BETTER_AUTH_URL: "https://edf.example.com", BETTER_AUTH_SECRET: SECRET }).ok).toBe(true);
   });
 
   it("rejects a BETTER_AUTH_URL that is not a bare origin", () => {
@@ -120,6 +132,17 @@ describe("GET /api/health surfaces auth config", () => {
     expect(body.auth).toBe("misconfigured");
     expect(body.problems).toEqual(["BETTER_AUTH_URL_MISSING"]);
     expect(JSON.stringify(body)).not.toContain("a-very-secret-value");
+  });
+
+  it("returns 503 BETTER_AUTH_URL_LOOPBACK on Railway when BETTER_AUTH_URL is a localhost origin", async () => {
+    vi.stubEnv("REQUIRE_DB", "true");
+    vi.stubEnv("RAILWAY_PROJECT_ID", "p");
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("BETTER_AUTH_URL", "http://localhost:3000");
+    vi.stubEnv("BETTER_AUTH_SECRET", "a-very-secret-value-that-must-not-leak");
+    const { status, body } = await health();
+    expect(status).toBe(503);
+    expect(body.problems).toEqual(["BETTER_AUTH_URL_LOOPBACK"]);
   });
 
   it("reports auth ok locally with dev defaults", async () => {
