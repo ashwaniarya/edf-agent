@@ -3,13 +3,14 @@ import type { CallToolResult } from "@modelcontextprotocol/server";
 import type { McpIdentity } from "@/src/auth/mcp-guard";
 import type { UserDirectory } from "@/src/auth/users";
 
-const output = z.object({ userId: z.string(), email: z.string(), name: z.string() });
+const output = z.object({ userId: z.string(), email: z.string().optional(), name: z.string().optional() });
 
 export const whoamiTool = {
   name: "whoami",
   config: {
     title: "Who am I",
-    description: "Returns the EDF Agent account (user id, email, name) that this connection is signed in as.",
+    description:
+      "Returns the EDF Agent account this connection is signed in as: the user id, plus the email and name when the email and profile scopes were granted.",
     inputSchema: z.strictObject({}),
     outputSchema: output,
     annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
@@ -28,6 +29,9 @@ export async function whoami(deps: { users: UserDirectory }, identity: McpIdenti
   }
   if (!user) return toolError("The signed-in account no longer exists. Re-authenticate.");
 
-  const result: z.infer<typeof output> = { userId: user.id, email: user.email, name: user.name };
+  // Mirror the consent screen and Better Auth's userinfo: identity fields only for the scopes that were granted.
+  const result: z.infer<typeof output> = { userId: user.id };
+  if (identity.scopes.includes("email")) result.email = user.email;
+  if (identity.scopes.includes("profile")) result.name = user.name;
   return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
 }

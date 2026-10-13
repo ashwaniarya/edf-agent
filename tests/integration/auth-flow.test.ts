@@ -316,11 +316,13 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     expect(claims.sub).toBe(users.A.id);
   });
 
-  it("A's token calls whoami over both protocol eras and gets A", async () => {
+  it("A's token calls whoami over both protocol eras and gets A, without the email and name A did not consent to", async () => {
     for (const era of ["modern", "legacy"] as const) {
       const { status, msg } = await whoami(users.A.access, era);
       expect(status).toBe(200);
-      expect(msg.result.structuredContent).toEqual({ userId: users.A.id, email: users.A.email, name: "User A" });
+      // A granted only offline_access, so the consent screen listed neither "See your email" nor "See your name".
+      expect(msg.result.structuredContent).toEqual({ userId: users.A.id });
+      expect(JSON.stringify(msg)).not.toContain(users.A.email);
     }
     const list = modernRequest(MCP, "tools/list", {}, { authorization: `Bearer ${users.A.access}` });
     const listed = await rpcMessage(await fetch(list.request), list.id);

@@ -8,7 +8,8 @@ const B: UserRecord = { id: "user_B", email: "b@example.com", name: "Bala" };
 const users = (...records: UserRecord[]): UserDirectory => ({
   findById: vi.fn(async (id: string) => records.find((u) => u.id === id) ?? null),
 });
-const identity = (userId: string) => ({ userId, clientId: "client_1", scopes: [] });
+const ALL_SCOPES = ["openid", "profile", "email", "offline_access"];
+const identity = (userId: string, scopes: string[] = ALL_SCOPES) => ({ userId, clientId: "client_1", scopes });
 const text = (r: { content: unknown[] }) => (r.content[0] as { text: string }).text;
 
 describe("whoami", () => {
@@ -19,6 +20,24 @@ describe("whoami", () => {
     expect(r.isError).toBeFalsy();
     expect(r.structuredContent).toEqual({ userId: "user_B", email: "b@example.com", name: "Bala" });
     expect(JSON.parse(text(r))).toEqual({ userId: "user_B", email: "b@example.com", name: "Bala" });
+  });
+
+  it("returns email and name only when the email and profile scopes were granted (what the consent screen listed)", async () => {
+    const dir = users(A);
+    const narrow = await whoami({ users: dir }, identity("user_A", ["offline_access"]));
+    expect(narrow.isError).toBeFalsy();
+    expect(narrow.structuredContent).toEqual({ userId: "user_A" });
+    expect(text(narrow)).not.toMatch(/a@example\.com|Asha/);
+
+    expect((await whoami({ users: dir }, identity("user_A", ["email"]))).structuredContent).toEqual({ userId: "user_A", email: "a@example.com" });
+    expect((await whoami({ users: dir }, identity("user_A", ["profile"]))).structuredContent).toEqual({ userId: "user_A", name: "Asha" });
+  });
+
+  it("validates every scope-dependent shape against its declared output schema", async () => {
+    for (const scopes of [[], ["email"], ["profile"], ALL_SCOPES]) {
+      const r = await whoami({ users: users(A) }, identity("user_A", scopes));
+      expect(whoamiTool.config.outputSchema.safeParse(r.structuredContent).success).toBe(true);
+    }
   });
 
   it("declares no input at all, so a caller cannot ask about another user", () => {
