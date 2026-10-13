@@ -107,7 +107,12 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     server?.closeAllConnections();
     await new Promise<void>((r) => server?.close(() => r()));
     const { getPool } = await import("@/src/db");
-    await getPool()?.end();
+    const pool = getPool();
+    // pool.end() resolves before every client's Terminate reaches the server, and DROP ... WITH (FORCE) then
+    // SIGTERMs those backends. The resulting 57P01 is emitted on the pool; swallow it here rather than let it
+    // surface as an unhandled error that fails an otherwise green run.
+    pool?.on("error", () => {});
+    await pool?.end();
     await admin?.query(`drop database if exists ${dbName} with (force)`);
     await admin?.end();
     vi.unstubAllEnvs();
@@ -441,10 +446,13 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
         headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.77" },
         body: JSON.stringify({ redirect_uris: ["http://localhost:1/callback"], token_endpoint_auth_method: "none" }),
       });
-    const statuses = [];
-    for (let i = 0; i < 6; i++) statuses.push((await register()).status);
-    expect(statuses.slice(0, 5)).toEqual([201, 201, 201, 201, 201]);
-    expect(statuses[5]).toBe(429);
+    const responses = [];
+    for (let i = 0; i < 6; i++) responses.push(await register());
+    expect(responses.map((r) => r.status)).toEqual([201, 201, 201, 201, 201, 429]);
+    // rateLimit.lastRequest is int8; read back as a string it made this header string-concatenated nonsense.
+    const retryAfter = Number(responses[5].headers.get("x-retry-after"));
+    expect(retryAfter).toBeGreaterThan(0);
+    expect(retryAfter).toBeLessThanOrEqual(60);
     expect((await fetch(`${BASE}/api/auth/oauth2/register`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.78" },
