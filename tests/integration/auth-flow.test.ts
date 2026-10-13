@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { decodeJwt } from "jose";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createDpopKey, type DpopKey } from "@/tests/support/dpop";
 import { legacyInitialize, legacyRequest, modernRequest, rpcMessage } from "@/tests/support/mcp-rpc";
 
 const ADMIN_URL = process.env.TEST_DATABASE_URL;
@@ -65,6 +66,8 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
   let databaseUrl = "";
   let server: Server;
   let BASE = "";
+  /** Like `next start` behind a proxy, route handlers see request.url on an internal origin, never the public Host. */
+  let INTERNAL = "";
   let MCP = "";
   let ISSUER = "";
   const users: Record<"A" | "B", { id: string; email: string; ip: string; cookie: string; access: string; refresh: string }> = {
@@ -88,6 +91,7 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     );
     await new Promise<void>((r) => server.listen(0, r));
     BASE = `http://localhost:${(server.address() as AddressInfo).port}`;
+    INTERNAL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     MCP = `${BASE}/api/mcp`;
     ISSUER = `${BASE}/api/auth`;
 
@@ -125,7 +129,7 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     for (const [k, v] of Object.entries(req.headers)) if (typeof v === "string") headers.set(k, v);
     // Like `next start`: x-forwarded-for defaults to the socket address, so in-container fetches all share 127.0.0.1.
     if (!headers.has("x-forwarded-for") && req.socket.remoteAddress) headers.set("x-forwarded-for", req.socket.remoteAddress);
-    const request = new Request(new URL(req.url!, BASE), {
+    const request = new Request(new URL(req.url!, INTERNAL), {
       method: req.method,
       headers,
       body: ["GET", "HEAD"].includes(req.method!) ? undefined : Buffer.concat(chunks),
@@ -157,7 +161,7 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
   }
 
   /** Browser leg: authorize -> sign-in (resumes the signed request) -> consent -> callback with code. */
-  async function authorize(who: (typeof users)["A"], clientId: string, redirectUri: string, scope: string | null) {
+  async function authorize(who: (typeof users)["A"], clientId: string, redirectUri: string, scope: string | null, dpop?: DpopKey) {
     const { verifier, challenge } = pkce();
     const state = randomBytes(8).toString("hex");
     const q = new URLSearchParams({
@@ -193,7 +197,11 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
 
     const token = await fetch(`${BASE}/api/auth/oauth2/token`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        // htu is the advertised token_endpoint, not whatever URL the route handler happens to see.
+        ...(dpop ? { dpop: await dpop.proof("POST", `${ISSUER}/oauth2/token`) } : {}),
+      },
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: callback.searchParams.get("code")!,
@@ -210,8 +218,10 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     return body as { access_token: string; refresh_token?: string; id_token?: string; token_type: string };
   }
 
-  async function whoami(token: string, era: "legacy" | "modern" = "modern") {
-    const auth = { authorization: `Bearer ${token}` };
+  async function whoami(token: string, era: "legacy" | "modern" = "modern", dpop?: DpopKey) {
+    const auth: Record<string, string> = dpop
+      ? { authorization: `DPoP ${token}`, dpop: await dpop.proof("POST", MCP, token) }
+      : { authorization: `Bearer ${token}` };
     const call = era === "legacy"
       ? legacyRequest(MCP, "tools/call", { name: "whoami", arguments: {} }, auth)
       : modernRequest(MCP, "tools/call", { name: "whoami", arguments: {} }, auth);
@@ -335,6 +345,16 @@ describe.skipIf(!ADMIN_URL)("S1: Claude Code signs in over OAuth and calls whoam
     const { status, msg } = await whoami(users.B.access);
     expect(status).toBe(200);
     expect(msg.result.structuredContent).toEqual({ userId: users.B.id, email: users.B.email, name: "User B" });
+  });
+
+  it("a DPoP client gets a sender-constrained token and calls whoami, with proofs for the advertised public URLs", async () => {
+    const key = await createDpopKey();
+    const tokens = await authorize(users.B, claude.id, "http://localhost:61235/callback", null, key);
+    expect(tokens.token_type).toBe("DPoP");
+    expect(decodeJwt(tokens.access_token).cnf).toEqual({ jkt: key.jkt });
+    const { status, msg } = await whoami(tokens.access_token, "modern", key);
+    expect(status).toBe(200);
+    expect(msg.result.structuredContent.userId).toBe(users.B.id);
   });
 
   it("refreshes A's token and the new access token still resolves to A", async () => {

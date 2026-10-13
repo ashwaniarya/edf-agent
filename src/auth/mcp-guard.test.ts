@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { JWTPayload } from "jose";
+import { createDpopKey } from "@/tests/support/dpop";
 import { startLocalJwks, type LocalJwks } from "@/tests/support/local-jwks";
 import { createMcpGuard, type McpIdentity } from "./mcp-guard";
 
@@ -113,6 +114,29 @@ describe("createMcpGuard", () => {
     const res = await call(`Bearer ${await accessToken({ sub: "user_A" })}`);
     expect(res.status).toBe(200);
     expect(seen).toEqual([{ userId: "user_A", clientId: "client_1", scopes: ["openid", "profile", "email", "offline_access"] }]);
+  });
+
+  it("checks DPoP proofs against the public resource URL, not Next's internal request URL", async () => {
+    const seen: McpIdentity[] = [];
+    const guard = createMcpGuard({ issuer: ISSUER, resource: RESOURCE, jwksUrl: jwks.url() }, async (_req, id) => (seen.push(id), Response.json({ ok: true })));
+    const key = await createDpopKey();
+    const token = await accessToken({ cnf: { jkt: key.jkt } });
+    // What `next start` hands the route behind a proxy: https://localhost:$PORT/..., whatever the public Host.
+    const INTERNAL = "https://localhost:3477/api/mcp";
+    const call = async (htu: string) =>
+      guard(new Request(INTERNAL, { method: "POST", headers: { authorization: `DPoP ${token}`, dpop: await key.proof("POST", htu, token) }, body: "{}" }));
+
+    const ok = await call(RESOURCE);
+    expect(ok.status).toBe(200);
+    expect(seen).toEqual([{ userId: "user_A", clientId: "client_1", scopes: ["openid", "profile", "email", "offline_access"] }]);
+
+    // A proof for the wrong URL gets RFC 9449's DPoP challenge (fix the proof), not a Bearer invalid_token (re-authenticate).
+    const bad = await call(INTERNAL);
+    expect(bad.status).toBe(401);
+    expect(bad.headers.get("www-authenticate")).toMatch(/^DPoP error="invalid_dpop_proof"/);
+    // Presenting the bound token as a plain Bearer token is a token problem: Bearer challenge with resource_metadata.
+    await expectUnauthorized(await guard(new Request(INTERNAL, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" })), { invalidToken: true });
+    expect(seen).toHaveLength(1);
   });
 
   it("turns a handler crash into a generic 500, not a 401 that would trigger re-authentication", async () => {

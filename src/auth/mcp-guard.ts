@@ -2,6 +2,7 @@ import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import type { DpopReplayStore } from "better-auth/oauth2";
 import type { JWTPayload } from "jose";
 import { errorName, jsonRpcError } from "@/src/http/jsonrpc";
+import { onPublicOrigin } from "@/src/http/public-request";
 
 /** Caller identity derived only from a verified access token. */
 export type McpIdentity = { userId: string; clientId: string; scopes: string[] };
@@ -28,10 +29,13 @@ export function identityFromClaims(claims: JWTPayload): McpIdentity | null {
   return { userId: claims.sub, clientId, scopes };
 }
 
+const isDpopProofChallenge = (res: Response) => res.headers.get("www-authenticate")?.startsWith('DPoP error="invalid_dpop_proof"') === true;
+
 /**
  * Verifies the bearer token (signature, issuer, audience, expiry) and hands the
  * handler an identity taken from the token alone. Every auth failure, including
- * verifier/JWKS errors, is a 401 with an RFC 9728 challenge and a fixed body.
+ * verifier/JWKS errors, is a 401 with an RFC 9728 challenge and a fixed body,
+ * except a failed DPoP proof, which keeps the library's RFC 9449 DPoP challenge.
  */
 export function createMcpGuard(options: McpGuardOptions, handler: McpGuardedHandler): (request: Request) => Promise<Response> {
   const metadataUrl = protectedResourceMetadataUrl(options.resource);
@@ -61,7 +65,10 @@ export function createMcpGuard(options: McpGuardOptions, handler: McpGuardedHand
     },
   );
 
-  return async (request) => {
+  const origin = new URL(options.resource).origin;
+  return async (incoming) => {
+    // DPoP proofs sign the public resource URL; Next hands us its internal one.
+    const request = onPublicOrigin(incoming, origin);
     const hasCredentials = request.headers.has("authorization");
     let res: Response;
     try {
@@ -70,7 +77,12 @@ export function createMcpGuard(options: McpGuardOptions, handler: McpGuardedHand
       console.warn("[mcp-auth] token verification error:", errorName(e));
       return unauthorized(true);
     }
-    if (res.status === 401 && !authenticated.has(request)) return unauthorized(hasCredentials);
+    if (res.status === 401 && !authenticated.has(request)) {
+      // RFC 9449: a missing or bad proof for a DPoP-bound token keeps the library's DPoP challenge (fix the
+      // proof) instead of invalid_token (re-authenticate). Everything else, e.g. a Basic or mismatched scheme,
+      // gets the Bearer challenge that points clients at the protected-resource metadata.
+      return isDpopProofChallenge(res) ? res : unauthorized(hasCredentials);
+    }
     return res;
   };
 }

@@ -8,25 +8,29 @@ import { buildAuthOptions } from "./options";
 const createAuth = (pool: Pool, config: AuthConfig) => betterAuth(buildAuthOptions({ pool, ...config }));
 export type Auth = ReturnType<typeof createAuth>;
 
-let instance: Auth | undefined;
+let instance: { auth: Auth; config: AuthConfig } | undefined;
 
-/** Lazily built so `next build` and the health route never construct auth without env. */
-export function getAuth(): Auth {
+function load() {
   if (instance) return instance;
   const config = requireAuthConfig();
   const pool = getPool();
   if (!pool) throw new Error("DATABASE_URL is not set");
-  return (instance = createAuth(pool, config));
+  return (instance = { auth: createAuth(pool, config), config });
 }
 
-/** Runs `fn` with the auth instance, or answers 503 (reason logged, never returned) when auth can't be built. */
-export async function withAuth(fn: (auth: Auth) => Response | Promise<Response>): Promise<Response> {
-  let auth: Auth;
+/** Lazily built so `next build` and the health route never construct auth without env. */
+export function getAuth(): Auth {
+  return load().auth;
+}
+
+/** Runs `fn` with the auth instance and its config, or answers 503 (reason logged, never returned) when auth can't be built. */
+export async function withAuth(fn: (auth: Auth, config: AuthConfig) => Response | Promise<Response>): Promise<Response> {
+  let loaded: { auth: Auth; config: AuthConfig };
   try {
-    auth = getAuth();
+    loaded = load();
   } catch (e) {
     console.error("[auth] unavailable:", e instanceof AuthConfigError ? e.problems.join(",") : errorName(e));
     return Response.json({ error: "auth_unavailable" }, { status: 503, headers: { "cache-control": "no-store" } });
   }
-  return fn(auth);
+  return fn(loaded.auth, loaded.config);
 }
