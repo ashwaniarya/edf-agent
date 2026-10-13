@@ -39,4 +39,23 @@ describe("getHealth", () => {
     const h = await getHealth({ pingDb: null, version: "v", requireDb: true });
     expect(h).toEqual({ status: 503, body: { ok: false, db: null, version: "v" } });
   });
+
+  it("reports auth ok when the auth config has no problems", async () => {
+    const h = await getHealth({ pingDb: ok, version: "v", authProblems: [] });
+    expect(h).toEqual({ status: 200, body: { ok: true, db: true, version: "v", auth: "ok" } });
+  });
+
+  it("returns 503 with reason codes when the auth config is invalid, even if the db is up", async () => {
+    const h = await getHealth({ pingDb: ok, version: "v", authProblems: ["BETTER_AUTH_URL_MISSING"] });
+    expect(h).toEqual({
+      status: 503,
+      body: { ok: false, db: true, version: "v", auth: "misconfigured", problems: ["BETTER_AUTH_URL_MISSING"] },
+    });
+  });
+
+  it("keeps reporting the db state alongside an auth problem", async () => {
+    const h = await getHealth({ pingDb: boom, version: "v", authProblems: ["BETTER_AUTH_SECRET_MISSING"] });
+    expect(h.status).toBe(503);
+    expect(h.body).toMatchObject({ db: false, auth: "misconfigured" });
+  });
 });

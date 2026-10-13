@@ -1,4 +1,10 @@
-export type HealthBody = { ok: boolean; db: boolean | null; version: string };
+export type HealthBody = {
+  ok: boolean;
+  db: boolean | null;
+  version: string;
+  auth?: "ok" | "misconfigured";
+  problems?: string[];
+};
 export type HealthResult = { status: 200 | 503; body: HealthBody };
 
 export type HealthDeps = {
@@ -8,14 +14,12 @@ export type HealthDeps = {
   timeoutMs?: number;
   /** When true, a missing database counts as unhealthy (deployed environments). */
   requireDb?: boolean;
+  /** Auth config reason codes; omitted means auth is not checked. */
+  authProblems?: readonly string[];
 };
 
-export async function getHealth({ pingDb, version, timeoutMs = 2000, requireDb = false }: HealthDeps): Promise<HealthResult> {
-  if (!pingDb) {
-    return requireDb
-      ? { status: 503, body: { ok: false, db: null, version } }
-      : { status: 200, body: { ok: true, db: null, version } };
-  }
+async function checkDb({ pingDb, timeoutMs = 2000, requireDb = false }: HealthDeps): Promise<{ healthy: boolean; db: boolean | null }> {
+  if (!pingDb) return { healthy: !requireDb, db: null };
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -24,10 +28,26 @@ export async function getHealth({ pingDb, version, timeoutMs = 2000, requireDb =
 
   try {
     await Promise.race([pingDb(), timeout]);
-    return { status: 200, body: { ok: true, db: true, version } };
+    return { healthy: true, db: true };
   } catch {
-    return { status: 503, body: { ok: false, db: false, version } };
+    return { healthy: false, db: false };
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function getHealth(deps: HealthDeps): Promise<HealthResult> {
+  const { healthy, db } = await checkDb(deps);
+  const body: HealthBody = { ok: healthy, db, version: deps.version };
+
+  if (deps.authProblems) {
+    const authOk = deps.authProblems.length === 0;
+    body.auth = authOk ? "ok" : "misconfigured";
+    if (!authOk) {
+      body.ok = false;
+      body.problems = [...deps.authProblems];
+    }
+  }
+
+  return { status: body.ok ? 200 : 503, body };
 }
